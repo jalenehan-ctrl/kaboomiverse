@@ -1,0 +1,26 @@
+# Base44 sandbox environment for kaboomiverse (static HTML site).
+#
+# The repo is plain HTML/CSS/JS with no build step, so the app service runs a
+# plain runtime image (python:3.12-slim) serving the *cloned source* from a bind
+# mount. Editing index.html / splash.html is picked up on the next request --
+# there is no dev-server hot reload for a dependency-free static site, so the
+# preview is refreshed with reload_preview after edits.
+services:
+  web:
+    image: python:3.12-slim
+    working_dir: /app
+    command: ["python3", "-m", "http.server", "3000", "--bind", "0.0.0.0", "--directory", "/app"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+    environment:
+      # Platform-provided preview flag (bare entry = pass through from the host).
+      - BASE44_PREVIEW_MODE
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/index.html', timeout=3).read(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

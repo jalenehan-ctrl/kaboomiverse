@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Crybaby Kaboom</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+  body, html { width: 100%; height: 100%; overflow: hidden; background: #12121a; font-family: 'Arial Black', Impact, sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Responsive internal resolution
+const W = 1280;
+const H = 720;
+canvas.width = W;
+canvas.height = H;
+const GROUND_Y = 570;
+
+// Web Audio API Sound Synthesizer (No external MP3s needed)
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playSound(type) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  if (type === 'whine') {
+    // High-pitched warbling "WAAAH!" sound
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.linearRampToValueAtTime(680, now + 0.08);
+    osc.frequency.linearRampToValueAtTime(420, now + 0.28);
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    osc.start(now);
+    osc.stop(now + 0.3);
+  } else if (type === 'jump') {
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(580, now + 0.18);
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  } else if (type === 'hit') {
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.linearRampToValueAtTime(60, now + 0.2);
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+    osc.start(now);
+    osc.stop(now + 0.22);
+  } else if (type === 'kaboom') {
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(150, now);
+    osc.frequency.exponentialRampToValueAtTime(25, now + 0.7);
+    gain.gain.setValueAtTime(0.45, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.75);
+    osc.start(now);
+    osc.stop(now + 0.75);
+  }
+}
+
+// Game State
+let gameState = 'TITLE'; // TITLE, PLAY, GAMEOVER
+let score = 0;
+let highScore = 0;
+let sanity = 100;
+let tantrum = 0;
+let bgScroll = 0;
+let flashTimer = 0;
+let shakeTimer = 0;
+
+// Player Object
+const player = {
+  x: 180,
+  y: GROUND_Y - 150,
+  w: 95,
+  h: 150,
+  vy: 0,
+  gravity: 1.15,
+  isJumping: false,
+  whineCooldown: 0,
+  mouthOpenTimer: 0
+};
+
+const whineTexts = [
+  "WAAAH!", "LOOK AT MY EYE!", "IT'S KORIN'S FAULT!", 
+  "STUPID CHUCK!", "NOT FAIR!", "WHY ME?!", "LIFE SUCKS!"
+];
+
+let whines = [];
+let enemies = [];
+let particles = [];
+let spawnTimer = 0;
+
+// Enemy Definitions
+const ENEMY_TYPES = [
+  { name: "KORIN", hp: 3, speed: 6.5, color: "#e91e63", taunt: "DEAL WITH IT!", w: 90, h: 145, pattern: "walk" },
+  { name: "CHUCK", hp: 3, speed: 7.2, color: "#ff5722", taunt: "QUIT CRYING!", w: 100, h: 150, pattern: "charge" },
+  { name: "WOMEN", hp: 2, speed: 6.0, color: "#9c27b0", taunt: "GROW UP!", w: 85, h: 140, pattern: "walk" },
+  { name: "KIDS", hp: 1, speed: 8.5, color: "#ffc107", taunt: "CRYBABY!", w: 65, h: 95, pattern: "bounce" },
+  { name: "LIFE", hp: 4, speed: 4.5, color: "#607d8b", taunt: "BILLS & STRESS!", w: 120, h: 130, pattern: "float" },
+  { name: "NOVELTIES", hp: 1, speed: 9.0, color: "#00e5ff", taunt: "BZZZT! BOING!", w: 55, h: 110, pattern: "sine" }
+];
+
+function resetGame() {
+  score = 0;
+  sanity = 100;
+  tantrum = 0;
+  player.y = GROUND_Y - player.h;
+  player.vy = 0;
+  whines = [];
+  enemies = [];
+  particles = [];
+  gameState = 'PLAY';
+}
+
+function spawnParticles(x, y, color, count = 12) {
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 14,
+      vy: (Math.random() - 0.5) * 14,
+      life: 30 + Math.random() * 20,
+      color,
+      size: 4 + Math.random() * 8
+    });
+  }
+}
+
+function fireWhine() {
+  if (player.whineCooldown > 0) return;
+  playSound('whine');
+  player.whineCooldown = 12;
+  player.mouthOpenTimer = 18;
+  whines.push({
+    x: player.x + 95,
+    y: player.y + 55,
+    r: 28,
+    text: whineTexts[Math.floor(Math.random() * whineTexts.length)]
+  });
+  // Spawn tear droplets from face
+  spawnParticles(player.x + 70, player.y + 55, "#38b6ff", 4);
+}
+
+function jump() {
+  if (!player.isJumping) {
+    playSound('jump');
+    player.vy = -24;
+    player.isJumping = true;
+  }
+}
+
+function triggerKaboom() {
+  if (tantrum < 100) return;
+  playSound('kaboom');
+  tantrum = 0;
+  flashTimer = 25;
+  shakeTimer = 25;
+  enemies.forEach(e => {
+    score += 200;
+    spawnParticles(e.x + e.w/2, e.y + e.h/2, e.color, 25);
+  });
+  enemies = [];
+}
+
+// Input Handling (Touch & Mouse & Keyboard)
+function handlePointer(clientX, clientY) {
+  initAudio();
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) * (W / rect.width);
+  const y = (clientY - rect.top) * (H / rect.height);
+
+  if (gameState === 'TITLE' || gameState === 'GAMEOVER') {
+    resetGame();
+    return;
+  }
+
+  // Check KABOOM Button (Top Right)
+  if (x > W - 310 && y < 120 && tantrum >= 100) {
+    triggerKaboom();
+    return;
+  }
+
+  // Left half = Jump, Right half = Whine
+  if (x < W * 0.45) {
+    jump();
+  } else {
+    fireWhine();
+  }
+}
+
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    handlePointer(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+  }
+}, { passive: false });
+
+canvas.addEventListener('mousedown', (e) => {
+  handlePointer(e.clientX, e.clientY);
+});
+
+window.addEventListener('keydown', (e) => {
+  initAudio();
+  if (gameState !== 'PLAY') {
+    if (e.code === 'Space' || e.code === 'Enter') resetGame();
+    return;
+  }
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') jump();
+  if (e.code === 'KeyZ' || e.code === 'Enter' || e.code === 'KeyJ') fireWhine();
+  if (e.code === 'KeyX' || e.code === 'KeyK') triggerKaboom();
+});
+
+// Update Loop
+function update() {
+  if (gameState !== 'PLAY') return;
+
+  bgScroll = (bgScroll + 4) % 640;
+  if (player.whineCooldown > 0) player.whineCooldown--;
+  if (player.mouthOpenTimer > 0) player.mouthOpenTimer--;
+  if (flashTimer > 0) flashTimer--;
+  if (shakeTimer > 0) shakeTimer--;
+
+  // Player Physics
+  player.y += player.vy;
+  player.vy += player.gravity;
+  if (player.y >= GROUND_Y - player.h) {
+    player.y = GROUND_Y - player.h;
+    player.vy = 0;
+    player.isJumping = false;
+  }
+
+  // Update Whine Projectiles
+  for (let i = whines.length - 1; i >= 0; i--) {
+    let w = whines[i];
+    w.x += 15;
+    w.r += 0.6;
+    if (w.x > W + 100) whines.splice(i, 1);
+  }
+
+  // Spawn Enemies
+  spawnTimer++;
+  const spawnInterval = Math.max(38, 85 - Math.floor(score / 1500) * 5);
+  if (spawnTimer >= spawnInterval) {
+    spawnTimer = 0;
+    const t = ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)];
+    enemies.push({
+      ...t,
+      maxHp: t.hp,
+      x: W + 80,
+      y: t.pattern === 'float' ? GROUND_Y - 260 : GROUND_Y - t.h,
+      baseY: GROUND_Y - t.h,
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  // Update Enemies
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    let e = enemies[i];
+    e.x -= e.speed;
+    e.phase += 0.12;
+
+    if (e.pattern === 'bounce') {
+      e.y = e.baseY - Math.abs(Math.sin(e.phase) * 140);
+    } else if (e.pattern === 'sine') {
+      e.y = (GROUND_Y - 180) + Math.sin(e.phase * 1.4) * 110;
+    } else if (e.pattern === 'float') {
+      e.y = (GROUND_Y - 240) + Math.sin(e.phase * 0.7) * 40;
+    }
+
+    // Check Collision with Whines
+    for (let j = whines.length - 1; j >= 0; j--) {
+      let w = whines[j];
+      if (w.x + w.r > e.x && w.x - w.r < e.x + e.w &&
+          w.y + w.r > e.y && w.y - w.r < e.y + e.h) {
+        whines.splice(j, 1);
+        e.hp--;
+        e.x += 28; // Knockback
+        spawnParticles(w.x, w.y, "#00ffff", 6);
+        if (e.hp <= 0) {
+          score += 150;
+          tantrum = Math.min(100, tantrum + 14);
+          spawnParticles(e.x + e.w/2, e.y + e.h/2, e.color, 18);
+          enemies.splice(i, 1);
+        }
+        break;
+      }
+    }
+
+    if (!enemies[i]) continue;
+
+    // Check Collision with Player
+    if (e.x < player.x + player.w - 15 && e.x + e.w > player.x + 15 &&
+        e.y < player.y + player.h - 10 && e.y + e.h > player.y + 10) {
+      playSound('hit');
+      sanity = Math.max(0, sanity - 20);
+      tantrum = Math.min(100, tantrum + 25);
+      shakeTimer = 12;
+      spawnParticles(player.x + 50, player.y + 70, "#ff1744", 20);
+      enemies.splice(i, 1);
+      if (sanity <= 0) {
+        highScore = Math.max(highScore, score);
+        gameState = 'GAMEOVER';
+      }
+    } else if (e.x < -150) {
+      enemies.splice(i, 1);
+    }
+  }
+
+  // Update Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    let p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// Draw Character Matching Uploaded Photo
+function drawCrybaby(x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Dark Blue Hoodie Body
+  ctx.fillStyle = "#1c2d5a";
+  ctx.beginPath();
+  ctx.roundRect(10, 65, 78, 85, 18);
+  ctx.fill();
+
+  // White Collar / Shirt Peek
+  ctx.fillStyle = "#e0e6ed";
+  ctx.beginPath();
+  ctx.moveTo(45, 68);
+  ctx.lineTo(62, 95);
+  ctx.lineTo(35, 95);
+  ctx.fill();
+
+  // Head / Skin Tone
+  ctx.fillStyle = "#e6b89c";
+  ctx.beginPath();
+  ctx.arc(52, 42, 34, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shaved Sideburn / Ear with Blue Stud Earring
+  ctx.fillStyle = "#8d6e63";
+  ctx.fillRect(22, 25, 22, 22);
+  ctx.fillStyle = "#d7a184";
+  ctx.beginPath();
+  ctx.arc(24, 46, 9, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#00e5ff"; // Earring stud
+  ctx.beginPath();
+  ctx.arc(24, 52, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Spiky Teal / Green Mohawk
+  ctx.fillStyle = "#26a69a";
+  ctx.beginPath();
+  ctx.moveTo(20, 22);
+  ctx.lineTo(10, 4);
+  ctx.lineTo(35, 12);
+  ctx.lineTo(42, -8);
+  ctx.lineTo(58, 10);
+  ctx.lineTo(78, -4);
+  ctx.lineTo(75, 16);
+  ctx.lineTo(95, 10);
+  ctx.lineTo(78, 25);
+  ctx.closePath();
+  ctx.fill();
+
+  // Eye (Wide & Dramatic)
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(64, 32, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#37474f";
+  ctx.beginPath();
+  ctx.arc(66, 31, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Signature Dark Red/Purple Tear Streaks Down Cheek
+  ctx.strokeStyle = "#6a1b29";
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(56, 38);
+  ctx.lineTo(54, 72);
+  ctx.moveTo(61, 40);
+  ctx.lineTo(62, 70);
+  ctx.moveTo(50, 34);
+  ctx.lineTo(47, 64);
+  ctx.stroke();
+
+  // Wide Open Whining Mouth
+  ctx.fillStyle = "#4a0e17";
+  ctx.beginPath();
+  const mouthH = player.mouthOpenTimer > 0 ? 18 : 11;
+  ctx.ellipse(74, 56, 9, mouthH, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hand & Finger Pointing at Crying Face
+  ctx.fillStyle = "#e6b89c";
+  ctx.beginPath();
+  ctx.roundRect(42, 74, 28, 30, 8);
+  ctx.fill();
+  // Pointing Index Finger
+  ctx.beginPath();
+  ctx.roundRect(54, 52, 9, 26, 4);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// Draw Scrolling Laundry/Kitchen Background from Photo
+function drawBackground() {
+  // Walls
+  ctx.fillStyle = "#c8b98e";
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  for (let offset = -bgScroll; offset < W; offset += 640) {
+    // Dark Hallway Doorway on Right
+    ctx.fillStyle = "#0b0d13";
+    ctx.fillRect(offset + 420, 40, 180, GROUND_Y - 40);
+
+    // Window inside dark room
+    ctx.fillStyle = "#b3e5fc";
+    ctx.fillRect(offset + 460, 160, 100, 130);
+    ctx.fillStyle = "#1b5e20"; // Houseplants silhouette
+    ctx.beginPath();
+    ctx.arc(offset + 510, 260, 35, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cream Kitchen Cabinets
+    ctx.fillStyle = "#dfd3ad";
+    ctx.strokeStyle = "#a6976c";
+    ctx.lineWidth = 4;
+    ctx.fillRect(offset + 30, 40, 190, 220);
+    ctx.strokeRect(offset + 30, 40, 190, 220);
+
+    // Wire Flower Wall Art
+    ctx.strokeStyle = "#5d5338";
+    ctx.lineWidth = 2;
+    for (let a = 0; a < 8; a++) {
+      ctx.beginPath();
+      ctx.ellipse(offset + 310, 150, 45, 18, (a * Math.PI) / 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Washing Machine
+    ctx.fillStyle = "#eceff1";
+    ctx.fillRect(offset + 40, GROUND_Y - 190, 170, 190);
+    ctx.fillStyle = "#cfd8dc";
+    ctx.fillRect(offset + 40, GROUND_Y - 220, 170, 30);
+
+    // Iconic Yellow Bottle on Washer
+    ctx.fillStyle = "#fbc02d";
+    ctx.beginPath();
+    ctx.roundRect(offset + 145, GROUND_Y - 255, 36, 65, 8);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(offset + 153, GROUND_Y - 263, 20, 8);
+  }
+
+  // Floor
+  ctx.fillStyle = "#2b2d3c";
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+}
+
+function drawEnemies() {
+  enemies.forEach(e => {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+
+    if (e.name === "LIFE") {
+      // Storm Cloud + Bills
+      ctx.fillStyle = "#546e7a";
+      ctx.beginPath();
+      ctx.arc(40, 45, 35, 0, Math.PI * 2);
+      ctx.arc(80, 40, 40, 0, Math.PI * 2);
+      ctx.arc(60, 70, 35, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ffeb3b";
+      ctx.font = "bold 18px Arial";
+      ctx.fillText("TAXES & BILLS", 5, 115);
+    } else if (e.name === "NOVELTIES") {
+      // Wobbling Neon Novelty Shape
+      ctx.fillStyle = "#ff4081";
+      ctx.beginPath();
+      ctx.roundRect(12, 10, 30, 85, 15);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(15, 95, 16, 0, Math.PI * 2);
+      ctx.arc(40, 95, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#000";
+      ctx.fillRect(4, 35, 48, 22);
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 11px Arial";
+      ctx.fillText("CENSORED", 6, 50);
+    } else {
+      // Humanoid Enemies (Korin, Chuck, Women, Kids)
+      ctx.fillStyle = e.color;
+      ctx.beginPath();
+      ctx.roundRect(10, 45, e.w - 20, e.h - 45, 14);
+      ctx.fill();
+
+      // Head
+      ctx.fillStyle = "#f5cba7";
+      ctx.beginPath();
+      ctx.arc(e.w / 2, 28, 24, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Angry Eyebrows
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(e.w / 2 - 14, 18);
+      ctx.lineTo(e.w / 2 - 2, 25);
+      ctx.moveTo(e.w / 2 + 14, 18);
+      ctx.lineTo(e.w / 2 + 2, 25);
+      ctx.stroke();
+    }
+
+    // Name Tag & HP Bar
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 18px Impact";
+    ctx.fillText(e.name, 8, -22);
+    ctx.fillStyle = "#333";
+    ctx.fillRect(8, -16, e.w - 16, 8);
+    ctx.fillStyle = "#00e676";
+    ctx.fillRect(8, -16, (e.w - 16) * (e.hp / e.maxHp), 8);
+
+    // Speech Bubble Taunt
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.fillRect(-10, -52, 130, 22);
+    ctx.fillStyle = "#ffeb3b";
+    ctx.font = "bold 13px Arial";
+    ctx.fillText(e.taunt, -4, -36);
+
+    ctx.restore();
+  });
+}
+
+function draw() {
+  ctx.save();
+  if (shakeTimer > 0) {
+    ctx.translate((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18);
+  }
+
+  drawBackground();
+
+  if (flashTimer > 0) {
+    ctx.fillStyle = `rgba(255, 50, 50, ${flashTimer / 25})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Draw Player
+  drawCrybaby(player.x, player.y);
+
+  // Draw Whine Sonic Rings
+  whines.forEach(w => {
+    ctx.strokeStyle = "#00e5ff";
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(w.x, w.y, w.r, -0.7, 0.7);
+    ctx.stroke();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 22px Impact";
+    ctx.fillText(w.text, w.x - 45, w.y - w.r - 8);
+  });
+
+  // Draw Enemies
+  drawEnemies();
+
+  // Draw Particles
+  particles.forEach(p => {
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // HUD - Sanity & Score
+  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+  ctx.roundRect(20, 20, 320, 95, 12);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "26px Impact";
+  ctx.fillText(`SCORE: ${score}`, 38, 55);
+  ctx.fillText(`SANITY:`, 38, 92);
+
+  ctx.fillStyle = "#444";
+  ctx.fillRect(130, 70, 185, 24);
+  ctx.fillStyle = sanity > 35 ? "#00e676" : "#ff1744";
+  ctx.fillRect(130, 70, 1.85 * sanity, 24);
+
+  // KABOOM Button (Top Right)
+  ctx.fillStyle = tantrum >= 100 ? (Math.floor(Date.now() / 150) % 2 ? "#ff1744" : "#ff9100") : "#37474f";
+  ctx.beginPath();
+  ctx.roundRect(W - 300, 20, 280, 85, 16);
+  ctx.fill();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "28px Impact";
+  ctx.fillText(tantrum >= 100 ? "TAP: CRYBABY KABOOM!" : `TANTRUM METER: ${tantrum}%`, W - 282, 72);
+
+  // Mobile Arcade Touch Controls Overlay
+  ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.beginPath();
+  ctx.roundRect(30, GROUND_Y + 25, 240, 100, 20);
+  ctx.roundRect(W - 270, GROUND_Y + 25, 240, 100, 20);
+  ctx.fill();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "32px Impact";
+  ctx.fillText("TAP: JUMP", 80, GROUND_Y + 85);
+  ctx.fillText("TAP: WHINE!", W - 225, GROUND_Y + 85);
+
+  // Title & Game Over Screens
+  if (gameState === 'TITLE' || gameState === 'GAMEOVER') {
+    ctx.fillStyle = "rgba(10, 12, 22, 0.85)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = "#00e5ff";
+    ctx.font = "74px Impact";
+    ctx.textAlign = "center";
+    ctx.fillText(gameState === 'TITLE' ? "CRYBABY KABOOM" : "TOTAL MELTDOWN!", W / 2, 230);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "28px Arial";
+    ctx.fillText("Whine at Korin, Chuck, Women, Kids, Life & Adult Novelties!", W / 2, 300);
+
+    if (gameState === 'GAMEOVER') {
+      ctx.fillStyle = "#ffeb3b";
+      ctx.font = "38px Impact";
+      ctx.fillText(`FINAL SCORE: ${score}   |   BEST: ${highScore}`, W / 2, 370);
+    }
+
+    ctx.fillStyle = "#e91e63";
+    ctx.beginPath();
+    ctx.roundRect(W / 2 - 200, 430, 400, 90, 20);
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "40px Impact";
+    ctx.fillText("TAP TO START WHINING", W / 2, 488);
+    ctx.textAlign = "left";
+  }
+
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
